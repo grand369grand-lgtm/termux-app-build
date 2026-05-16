@@ -10,3 +10,13 @@
 -dontobfuscate
 #-renamesourcefileattribute SourceFile
 #-keepattributes SourceFile,LineNumberTable
+
+# Keep JNI classes and their native methods
+-keep class com.termux.terminal.JNI { *; }
+-keep class com.termux.terminal.TerminalSession { *; }
+-keep class com.termux.shared.shell.command.environment.TermuxShellEnvironment { *; }
+
+# Keep all classes with native methods
+-keepclasseswithmembernames class * {
+    native <methods>;
+}
