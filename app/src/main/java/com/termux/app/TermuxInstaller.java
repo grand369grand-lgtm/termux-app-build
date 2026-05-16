@@ -28,6 +28,7 @@ import java.io.ByteArrayInputStream;
 import java.io.File;
 import java.io.FileOutputStream;
 import java.io.InputStreamReader;
+import java.io.OutputStream;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.zip.ZipEntry;
@@ -218,8 +219,32 @@ final class TermuxInstaller {
 
                     Logger.logInfo(LOG_TAG, "Bootstrap packages installed successfully.");
 
+                    // Make injected Anroot scripts executable
+                    String[] anrootScripts = {
+                        "anroot-first-boot", "dpkg-wrap", "anroot-pkg",
+                        "anroot-change-repo", "anroot-setup-storage",
+                        "anroot-setup-package-manager"
+                    };
+                    for (String script : anrootScripts) {
+                        File scriptFile = new File(TERMUX_PREFIX_DIR_PATH + "/bin/" + script);
+                        if (scriptFile.exists()) {
+                            //noinspection OctalInteger
+                            Os.chmod(scriptFile.getAbsolutePath(), 0700);
+                            Logger.logInfo(LOG_TAG, "Made executable: " + script);
+                        }
+                    }
+                    // Make profile.d script executable
+                    File profileScript = new File(TERMUX_PREFIX_DIR_PATH + "/etc/profile.d/anroot-path.sh");
+                    if (profileScript.exists()) {
+                        //noinspection OctalInteger
+                        Os.chmod(profileScript.getAbsolutePath(), 0700);
+                    }
+
                     // Recreate env file since termux prefix was wiped earlier
                     TermuxShellEnvironment.writeEnvironmentToFile(activity);
+
+                    // Run Anroot first-boot setup
+                    runAnrootFirstBoot(activity);
 
                     activity.runOnUiThread(whenDone);
 
@@ -373,6 +398,110 @@ final class TermuxInstaller {
 
     private static Error ensureDirectoryExists(File directory) {
         return FileUtils.createDirectoryFile(directory.getAbsolutePath());
+    }
+
+    /**
+     * Run the Anroot first-boot setup script that installs proot-distro and Debian.
+     * This runs in a background thread after bootstrap extraction.
+     */
+    private static void runAnrootFirstBoot(final Context context) {
+        final String firstBootScript = TERMUX_PREFIX_DIR_PATH + "/bin/anroot-first-boot";
+        final File scriptFile = new File(firstBootScript);
+
+        if (!scriptFile.exists()) {
+            Logger.logInfo(LOG_TAG, "Anroot first-boot script not found, creating inline setup...");
+
+            // Create the first-boot marker so the inline script runs on first shell session
+            try {
+                File markerFile = new File(TERMUX_PREFIX_DIR_PATH + "/ANROOT_FIRST_BOOT");
+                if (!markerFile.exists()) {
+                    new FileOutputStream(markerFile).close();
+                }
+
+                // Create a minimal inline first-boot script
+                createInlineFirstBootScript();
+            } catch (Exception e) {
+                Logger.logError(LOG_TAG, "Failed to create first-boot marker: " + e.getMessage());
+            }
+            return;
+        }
+
+        Logger.logInfo(LOG_TAG, "Running Anroot first-boot setup script...");
+
+        new Thread() {
+            @Override
+            public void run() {
+                try {
+                    // Create a marker file so we know first boot is in progress
+                    File markerFile = new File(TERMUX_PREFIX_DIR_PATH + "/ANROOT_FIRST_BOOT");
+                    if (!markerFile.exists()) {
+                        new FileOutputStream(markerFile).close();
+                    }
+
+                    ProcessBuilder pb = new ProcessBuilder(firstBootScript);
+                    pb.environment().put("PREFIX", TERMUX_PREFIX_DIR_PATH);
+                    pb.environment().put("HOME", TermuxConstants.TERMUX_HOME_DIR_PATH);
+                    pb.environment().put("PATH", TermuxConstants.TERMUX_BIN_PREFIX_DIR_PATH);
+                    pb.environment().put("TMPDIR", TermuxConstants.TERMUX_TMP_PREFIX_DIR_PATH);
+                    pb.environment().put("LD_LIBRARY_PATH", TermuxConstants.TERMUX_LIB_PREFIX_DIR_PATH);
+                    pb.redirectErrorStream(true);
+
+                    Process process = pb.start();
+
+                    // Read output in a separate thread to prevent blocking
+                    BufferedReader reader = new BufferedReader(new InputStreamReader(process.getInputStream()));
+                    String line;
+                    while ((line = reader.readLine()) != null) {
+                        Logger.logInfo(LOG_TAG, "[FirstBoot] " + line);
+                    }
+
+                    int exitCode = process.waitFor();
+                    if (exitCode == 0) {
+                        Logger.logInfo(LOG_TAG, "Anroot first-boot setup completed successfully.");
+                    } else {
+                        Logger.logError(LOG_TAG, "Anroot first-boot setup failed with exit code: " + exitCode);
+                    }
+                } catch (Exception e) {
+                    Logger.logStackTraceWithMessage(LOG_TAG, "Anroot first-boot setup error", e);
+                }
+            }
+        }.start();
+    }
+
+    /**
+     * Create an inline first-boot script as a fallback if the injected script wasn't found.
+     */
+    private static void createInlineFirstBootScript() {
+        try {
+            File scriptFile = new File(TERMUX_PREFIX_DIR_PATH + "/bin/anroot-first-boot");
+            if (scriptFile.exists()) return;
+
+            String script = "#!/data/data/com.anroot/files/usr/bin/sh\n" +
+                "export PREFIX=/data/data/com.anroot/files/usr\n" +
+                "export HOME=/data/data/com.anroot/files/home\n" +
+                "export PATH=$PREFIX/bin:$PATH\n" +
+                "export TMPDIR=$PREFIX/tmp\n" +
+                "export LD_LIBRARY_PATH=$PREFIX/lib\n" +
+                "echo '[Anroot] Running inline first-boot setup...'\n" +
+                "apt update && apt install -y proot-distro\n" +
+                "proot-distro install debian\n" +
+                "DEBIAN_ROOTFS=$PREFIX/var/proot-distro/installed-rootfs/debian\n" +
+                "if [ -d \"$DEBIAN_ROOTFS\" ]; then\n" +
+                "  proot-distro login debian -- apt update\n" +
+                "  proot-distro login debian -- apt install -y sudo ncurses-term nano\n" +
+                "fi\n" +
+                "rm -f $PREFIX/ANROOT_FIRST_BOOT\n" +
+                "echo '[Anroot] First-boot setup complete.'\n";
+
+            try (FileOutputStream fos = new FileOutputStream(scriptFile)) {
+                fos.write(script.getBytes());
+            }
+            //noinspection OctalInteger
+            Os.chmod(scriptFile.getAbsolutePath(), 0700);
+            Logger.logInfo(LOG_TAG, "Created inline first-boot script.");
+        } catch (Exception e) {
+            Logger.logError(LOG_TAG, "Failed to create inline first-boot script: " + e.getMessage());
+        }
     }
 
     public static byte[] loadZipBytes() {
