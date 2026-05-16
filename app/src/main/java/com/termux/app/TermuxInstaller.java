@@ -221,9 +221,9 @@ final class TermuxInstaller {
 
                     // Make injected Anroot scripts executable
                     String[] anrootScripts = {
-                        "anroot-first-boot", "dpkg-wrap", "anroot-pkg",
-                        "anroot-change-repo", "anroot-setup-storage",
-                        "anroot-setup-package-manager"
+                        "anroot-first-boot", "dpkg-wrap", "dpkg.real", "dpkg",
+                        "anroot-pkg", "anroot-change-repo", "anroot-setup-storage",
+                        "anroot-setup-package-manager", "file"
                     };
                     for (String script : anrootScripts) {
                         File scriptFile = new File(TERMUX_PREFIX_DIR_PATH + "/bin/" + script);
@@ -238,6 +238,11 @@ final class TermuxInstaller {
                     if (profileScript.exists()) {
                         //noinspection OctalInteger
                         Os.chmod(profileScript.getAbsolutePath(), 0700);
+                    }
+                    File autologinScript = new File(TERMUX_PREFIX_DIR_PATH + "/etc/profile.d/anroot-autologin.sh");
+                    if (autologinScript.exists()) {
+                        //noinspection OctalInteger
+                        Os.chmod(autologinScript.getAbsolutePath(), 0700);
                     }
 
                     // Recreate env file since termux prefix was wiped earlier
